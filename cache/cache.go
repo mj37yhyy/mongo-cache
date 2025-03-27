@@ -22,6 +22,13 @@ type CacheEntry struct {
 	ExpireAt   time.Time
 }
 
+// QueryInfo 存储查询相关信息
+type QueryInfo struct {
+	Key        string
+	Query      bson.M
+	Projection bson.M
+}
+
 // MongoCache 实现MongoDB集合的本地缓存
 type MongoCache struct {
 	config     *Config
@@ -31,6 +38,8 @@ type MongoCache struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	queryCache map[string]interface{}
+	// 存储所有活跃的查询条件
+	activeQueries map[string]QueryInfo
 }
 
 // New 创建一个新的MongoCache实例
@@ -46,12 +55,13 @@ func New(config *Config) (*MongoCache, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cache := &MongoCache{
-		config:     config,
-		collection: config.Client.Database(config.Database).Collection(config.Collection),
-		cache:      make(map[string]*CacheEntry),
-		ctx:        ctx,
-		cancel:     cancel,
-		queryCache: make(map[string]interface{}),
+		config:        config,
+		collection:    config.Client.Database(config.Database).Collection(config.Collection),
+		cache:         make(map[string]*CacheEntry),
+		ctx:           ctx,
+		cancel:        cancel,
+		queryCache:    make(map[string]interface{}),
+		activeQueries: make(map[string]QueryInfo),
 	}
 
 	return cache, nil
@@ -75,11 +85,19 @@ func (c *MongoCache) Start() error {
 	return nil
 }
 
-// 修改：使用查询条件启动缓存
+// StartWithQuery 使用查询条件启动缓存
 func (c *MongoCache) StartWithQuery(key string, query bson.M, projection bson.M) error {
 	// 执行查询并缓存结果
 	if err := c.loadDataWithQuery(key, query, projection); err != nil {
 		return fmt.Errorf("加载查询数据失败: %w", err)
+	}
+
+	// 记录查询条件
+	queryKey := c.generateQueryKey(key, query)
+	c.activeQueries[queryKey] = QueryInfo{
+		Key:        key,
+		Query:      query,
+		Projection: projection,
 	}
 
 	// 启动变更流监听
@@ -88,6 +106,11 @@ func (c *MongoCache) StartWithQuery(key string, query bson.M, projection bson.M)
 	// 如果设置了查询TTL，启动查询缓存过期清理
 	if c.config.QueryTTL > 0 {
 		go c.startQueryExpirationChecker()
+	}
+
+	// 启动定期轮询
+	if c.config.PollInterval > 0 {
+		go c.startQueryPolling()
 	}
 
 	return nil
@@ -679,4 +702,37 @@ func (c *MongoCache) updateQueryCache(key string, query bson.M, operationType st
 
 	// 更新过期时间
 	entry["expireAt"] = time.Now().Add(c.config.QueryTTL)
+}
+
+// startQueryPolling 启动定期轮询以修正缓存
+func (c *MongoCache) startQueryPolling() {
+	ticker := time.NewTicker(c.config.PollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.pollAndUpdateQueries()
+		case <-c.ctx.Done():
+			return
+		}
+	}
+}
+
+// pollAndUpdateQueries 轮询并更新所有活跃的查询缓存
+func (c *MongoCache) pollAndUpdateQueries() {
+	c.mutex.RLock()
+	queries := make([]QueryInfo, 0, len(c.activeQueries))
+	for _, queryInfo := range c.activeQueries {
+		queries = append(queries, queryInfo)
+	}
+	c.mutex.RUnlock()
+
+	for _, queryInfo := range queries {
+		// 重新执行查询
+		if err := c.loadDataWithQuery(queryInfo.Key, queryInfo.Query, queryInfo.Projection); err != nil {
+			fmt.Printf("轮询更新缓存失败 - key: %s, error: %v\n", queryInfo.Key, err)
+			continue
+		}
+	}
 }

@@ -29,6 +29,7 @@ func main() {
 	config.TTL = 30 * time.Minute                    // 缓存30分钟
 	config.MaxSize = 1000                            // 最多缓存1000条记录
 	config.EnableReverseUpdate = true                // 启用反向更新
+	config.PollInterval = time.Minute * 5            // 每5分钟轮询一次
 
 	// 自定义查询匹配器
 	config.QueryMatcher = func(doc bson.M, query bson.M) bool {

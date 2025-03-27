@@ -29,6 +29,8 @@ type Config struct {
 	QueryTTL time.Duration
 	// 查询匹配器函数，用于自定义判断文档是否匹配查询条件
 	QueryMatcher func(doc bson.M, query bson.M) bool
+	// 轮询间隔，0表示不进行轮询
+	PollInterval time.Duration
 }
 
 // NewConfig 创建默认配置
@@ -44,6 +46,7 @@ func NewConfig(client *mongo.Client, database, collection string) *Config {
 		EnableQueryCache:    true,
 		QueryTTL:            time.Minute * 5,
 		QueryMatcher:        DefaultQueryMatcher,
+		PollInterval:        time.Minute * 15, // 默认15分钟轮询一次
 	}
 }
 
