@@ -30,17 +30,44 @@ func main() {
 	config.MaxSize = 1000                            // 最多缓存1000条记录
 	config.EnableReverseUpdate = true                // 启用反向更新
 
+	// 自定义查询匹配器
+	config.QueryMatcher = func(doc bson.M, query bson.M) bool {
+		// 示例：自定义匹配逻辑
+		// 这里实现一个简单的匹配器，只检查年龄字段
+		if ageQuery, ok := query["age"].(bson.M); ok {
+			if gtValue, ok := ageQuery["$gt"].(float64); ok {
+				if docAge, ok := doc["age"].(float64); ok {
+					return docAge > gtValue
+				}
+			}
+		}
+		// 如果没有匹配到特定条件，使用默认匹配器
+		return cache.DefaultQueryMatcher(doc, query)
+	}
+
 	// 创建缓存实例
 	mongoCache, err := cache.New(config)
 	if err != nil {
 		log.Fatalf("创建缓存失败: %v", err)
 	}
 
-	// 启动缓存
-	if err := mongoCache.Start(); err != nil {
-		log.Fatalf("启动缓存失败: %v", err)
+	// 使用查询条件启动缓存
+	query := bson.M{"age": bson.M{"$gt": 25}}
+	projection := bson.M{"name": 1, "age": 1}
+	if err := mongoCache.StartWithQuery("older_users", query, projection); err != nil {
+		log.Fatalf("使用查询条件启动缓存失败: %v", err)
 	}
 	defer mongoCache.Stop()
+
+	// 从查询缓存获取数据
+	if result, found := mongoCache.GetWithQuery("older_users", query); found {
+		fmt.Println("查询缓存中的数据:")
+		if data, ok := result.([]bson.M); ok {
+			for _, item := range data {
+				fmt.Printf("  - %v\n", item)
+			}
+		}
+	}
 
 	// 使用缓存
 	// 从缓存获取文档
@@ -99,7 +126,52 @@ func main() {
 		}
 	}
 
+	// 示例：使用查询条件缓存
+	demoQueryCache(mongoCache)
+
 	// 保持程序运行，以便观察变更流
 	fmt.Println("缓存已启动，按Ctrl+C退出...")
 	select {}
+}
+
+// 新增：演示查询条件缓存的使用
+func demoQueryCache(cache *cache.MongoCache) {
+	fmt.Println("演示查询条件缓存:")
+
+	// 定义一些查询条件
+	query1 := map[string]interface{}{
+		"status": "active",
+		"limit":  10,
+	}
+
+	query2 := map[string]interface{}{
+		"status": "inactive",
+		"limit":  20,
+	}
+
+	// 模拟数据库查询结果
+	result1 := []string{"item1", "item2", "item3"}
+	result2 := []string{"item4", "item5"}
+
+	// 缓存不同查询条件的结果
+	cache.SetWithQuery("users", query1, result1)
+	cache.SetWithQuery("users", query2, result2)
+
+	// 从缓存获取结果
+	if cachedResult1, found := cache.GetWithQuery("users", query1); found {
+		fmt.Printf("查询条件1的缓存结果: %v\n", cachedResult1)
+	}
+
+	if cachedResult2, found := cache.GetWithQuery("users", query2); found {
+		fmt.Printf("查询条件2的缓存结果: %v\n", cachedResult2)
+	}
+
+	// 清除特定键的所有查询缓存
+	cache.ClearQueryCache("users")
+	fmt.Println("已清除users的所有查询缓存")
+
+	// 验证缓存已清除
+	if _, found := cache.GetWithQuery("users", query1); !found {
+		fmt.Println("查询条件1的缓存已被清除")
+	}
 }
